@@ -1,197 +1,286 @@
-import os
-import configparser
+"""
+src/config/config.py
+====================
+Gerenciador central de configurações do serviço GNRE.
+
+Responsabilidades:
+  - Localizar a raiz do projeto independente de onde o script é chamado
+  - Ler settings.ini e process.json
+  - Criar pastas obrigatórias automaticamente
+  - Expor configurações tipadas para os demais módulos
+"""
+
 import json
-from datetime import datetime
+import logging
+import configparser
+import sys
+import os
 from pathlib import Path
 
+
+def get_project_root() -> Path:
+    """
+    Detecta a raiz do projeto de forma robusta:
+    - Quando executado como script Python normal
+    - Quando executado como executável PyInstaller
+    """
+    if getattr(sys, 'frozen', False):
+        # Estamos rodando como executável (PyInstaller)
+        # sys.executable é o caminho do .exe
+        executable_path = Path(sys.executable)
+        # A raiz é a pasta onde está o executável
+        return executable_path.parent
+    else:
+        # Estamos rodando como script Python
+        # __file__ está em src/config/config.py
+        # Subimos 2 níveis para chegar na raiz do projeto
+        return Path(__file__).resolve().parents[2]
+
+
+# Raiz do projeto (pasta onde estão config/, src/, dist/)
+ROOT = get_project_root()
+
+
 class Config:
-    """Configuração de Pastas"""
-    
-    def __init__(self, root_folder):
-        self.root_folder = str(root_folder) if isinstance(root_folder, Path) else root_folder
-        # Config folder agora é na raiz mesmo, fora do src
-        self.config_folder = os.path.join(self.root_folder, 'config')
+    """Carrega e valida todas as configurações do serviço."""
 
-        self.settings_ini = os.path.join(self.config_folder, "settings.ini")
-        self.default_rules = os.path.join(self.config_folder, "proccess.json")
+    def __init__(self) -> None:
+        self._ini = self._load_ini()
+        self._proc = self._load_process()
+        self._ensure_dirs()
 
-        self._settings = None
-        self._proccess = None
+    # ── Loaders ──────────────────────────────────────────────────────────────
 
-        self._ensure_config_folder()
-        print(f"⚙️  Configuração carregada de: {self.config_folder}")
-
-    def _ensure_config_folder(self):
-        """Garante que a pasta de configuração existe"""
-        if not os.path.exists(self.config_folder):
-            os.makedirs(self.config_folder)
-            print(f"📁 Pasta de configuração criada: {self.config_folder}")
-
-        self._create_default_configs()
-
-    def _create_default_configs(self):
-        """Cria arquivos de configuração padrão se não existirem"""
-        if not os.path.exists(self.settings_ini):
-            config = configparser.ConfigParser()
-
-            config["DEFAULT"] = {
-                'pasta_base': os.path.join(self.root_folder, 'data'),
-                'formato_data': 'DD-MM-YYYY',
-                'processar_inicio': 'true'
-            }
-
-            config["PASTAS"] = {
-                'entrada': 'entrada',
-                'saida': 'saida',
-                'backup': 'backup',
-                'temp': 'temp'
-            }
-
-            config["LOGS"] = {
-                'nivel_log': 'INFO',
-                'salvar_log': 'true',
-                'pasta_logs': os.path.join(self.root_folder, 'logs')
-            }
-
-            with open(self.settings_ini, 'w', encoding='utf-8') as file:
-                config.write(file)
-            print(f"✅ settings.ini criado: {self.settings_ini}")
+    def _load_ini(self) -> configparser.ConfigParser:
+        path = ROOT / "config" / "settings.ini"
+        if not path.exists():
+            # Tenta criar um arquivo default se não existir
+            self._create_default_ini(path)
         
-        if not os.path.exists(self.default_rules):
-            process_config = {
-                "versao": "1.0.0",
-                "processamento": {
-                    "extensoes_permitidas": [".txt", ".pdf", ".jpg", ".png", ".csv", ".xlsx", ".docx"],
-                    "tamanho_maximo_mb": 100,
-                    "criar_subpastas_por_tipo": True,
-                    "manter_originais": False
-                },
-                "backup": {
-                    "antes_processar": True,
-                    "compactar": False,
-                    "dias_manter": 30
-                },
-                "nomenclatura": {
-                    "padrao": "{data}_{nome}",
-                    "remover_espacos": True,
-                    "max_tamanho": 100
-                },
-                "mapeamento_extensoes": {
-                    ".jpg": "imagens",
-                    ".jpeg": "imagens",
-                    ".png": "imagens",
-                    ".gif": "imagens",
-                    ".pdf": "documentos/pdf",
-                    ".doc": "documentos/word",
-                    ".docx": "documentos/word",
-                    ".xls": "documentos/excel",
-                    ".xlsx": "documentos/excel",
-                    ".txt": "documentos/texto",
-                    ".csv": "dados",
-                    ".mp4": "videos",
-                    ".mp3": "audios"
-                }
-            }
+        ini = configparser.ConfigParser()
+        ini.read(path, encoding="utf-8")
+        return ini
 
-            with open(self.default_rules, 'w', encoding='utf-8') as file:
-                json.dump(process_config, file, indent=4, ensure_ascii=False)
-            print(f"✅ proccess.json criado: {self.default_rules}")
-
-    def _load_settings(self):
-        """Carrega o arquivo 'settings.ini'"""
-        if self._settings is None:
-            self._settings = configparser.ConfigParser()
-            self._settings.read(self.settings_ini, encoding='utf-8')
-        return self._settings
-    
-    def get_ini(self, section, key, default=None):
-        """Obtem os valores de 'settings.ini'"""
-        try:
-            settings = self._load_settings()
-
-            if section in settings and key in settings[section]:
-                value = settings[section][key]
-            elif "DEFAULT" in settings and key in settings["DEFAULT"]:
-                value = settings["DEFAULT"][key]
-            else: 
-                return default
-            
-            if isinstance(value, str):
-                if value.lower() in ['true', 'false']:
-                    return value.lower() == 'true'
-                if value.isdigit():
-                    return int(value)
-                try: 
-                    return float(value)
-                except:
-                    return value
-            return value
-            
-        except Exception:
-            return default
-
-    def _load_process_rules(self):
-        """Carrega o arquivo 'proccess.json'"""
-        if self._proccess is None:
-            try:
-                with open(self.default_rules, 'r', encoding='utf-8') as file:
-                    self._proccess = json.load(file)
-            except:
-                self._proccess = {}
-        return self._proccess
-
-    def get_json(self, *keys, default=None):
-        """Obtém valor aninhado do process.json"""
-        try:
-            data = self._load_process_rules()
-            for key in keys:
-                data = data[key]
-            return data
-        except (KeyError, TypeError):
-            return default
-
-    def get_pasta_base(self):
-        """Retorna a pasta base configurada"""
-        return self.get_ini('DEFAULT', 'pasta_base', os.path.join(self.root_folder, 'data'))
-
-    def get_nome_pasta(self, tipo):
-        """Retorna o nome configurado para um tipo de pasta"""
-        return self.get_ini('PASTAS', tipo, tipo)
-
-    def get_formato_data(self):
-        """Retorna o formato de data configurado"""
-        return self.get_ini('DEFAULT', 'formato_data', 'DD-MM-YYYY')
-
-    def get_data_atual(self):
-        """Retorna a data atual no formato configurado"""
-        hoje = datetime.now()
-        formato = self.get_formato_data()
+    def _create_default_ini(self, path: Path) -> None:
+        """Cria um arquivo settings.ini padrão se ele não existir."""
+        path.parent.mkdir(parents=True, exist_ok=True)
         
-        mapa_formatos = {
-            'DD-MM-YYYY': '%d-%m-%Y',
-            'YYYY-MM-DD': '%Y-%m-%d',
-            'DD/MM/YYYY': '%d/%m/%Y',
-            'YYYY/MM/DD': '%Y/%m/%d',
-            'DDMMYYYY': '%d%m%Y',
-            'YYYYMMDD': '%Y%m%d'
+        default_content = """[system]
+name = GNRE Processor
+version = 1.0.0
+log_level = INFO
+
+[paths]
+entrada = entrada
+saida = saida
+backup = backup
+temp = temp
+logs = logs
+
+[processing]
+backup_after_process = True
+move_on_error = True
+extensions = .pdf
+
+[csv]
+delimiter = ;
+encoding = utf-8-sig
+output_prefix = importacao_senior
+
+[erp]
+transacao = GNRE
+situacao = A
+forma_pagamento = 
+natureza = 
+"""
+        path.write_text(default_content, encoding="utf-8")
+        print(f"📝  Arquivo de configuração padrão criado em: {path}")
+
+    def _load_process(self) -> dict:
+        path = ROOT / "config" / "process.json"
+        if not path.exists():
+            self._create_default_process(path)
+        
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _create_default_process(self, path: Path) -> None:
+        """Cria um arquivo process.json padrão se ele não existir."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        default_content = {
+            "sefaz_cod_for": {
+                "AC": "1001",
+                "AL": "1002",
+                "AP": "1003",
+                "AM": "1004",
+                "BA": "1005",
+                "CE": "1006",
+                "DF": "1007",
+                "ES": "1008",
+                "GO": "1009",
+                "MA": "1010",
+                "MT": "1011",
+                "MS": "1012",
+                "MG": "1013",
+                "PA": "1014",
+                "PB": "1015",
+                "PR": "1016",
+                "PE": "1017",
+                "PI": "1018",
+                "RJ": "1019",
+                "RN": "1020",
+                "RS": "1021",
+                "RO": "1022",
+                "RR": "1023",
+                "SC": "1024",
+                "SP": "1025",
+                "SE": "1026",
+                "TO": "1027"
+            },
+            "tipo_erp": {
+                "100-6": "GNRE-ICMS",
+                "101-3": "GNRE-FECP",
+                "102-1": "GNRE-MULTA",
+                "103-0": "GNRE-JUROS"
+            },
+            "campos_obrigatorios": [
+                "uf_favorecida",
+                "codigo_receita",
+                "cnpj",
+                "vencimento",
+                "total_recolher"
+            ],
+            "layout_csv": [
+                "Nº Título",
+                "Tipo",
+                "Cod For",
+                "Transação",
+                "Situação",
+                "Natureza",
+                "Data Emissão",
+                "Data de Entrada",
+                "Vencimento Original",
+                "Valor Original",
+                "Vencimento Prorrogado",
+                "Forma de Pagamento",
+                "Valor Multa Negociada",
+                "Leitor"
+            ]
         }
         
-        formato_python = mapa_formatos.get(formato, '%d-%m-%Y')
-        return hoje.strftime(formato_python)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default_content, f, indent=2, ensure_ascii=False)
+        
+        print(f"📝  Arquivo de regras padrão criado em: {path}")
 
-    def get_extensoes_permitidas(self):
-        """Retorna lista de extensões permitidas"""
-        return self.get_json('processamento', 'extensoes_permitidas', default=['.txt', '.pdf'])
+    def _ensure_dirs(self) -> None:
+        """Cria automaticamente as pastas de dados e logs se não existirem."""
+        for key in ("entrada", "saida", "backup", "temp"):
+            self.path(key).mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_mapeamento_extensoes(self):
-        """Retorna mapeamento de extensões para pastas"""
-        return self.get_json('mapeamento_extensoes', default={})
+    # ── Atalhos de seção ─────────────────────────────────────────────────────
 
-    def get_pasta_por_extensao(self, extensao):
-        """Retorna a pasta destino para uma extensão"""
-        mapeamento = self.get_mapeamento_extensoes()
-        return mapeamento.get(extensao.lower())
+    def get(self, section: str, key: str, fallback: str = "") -> str:
+        return self._ini.get(section, key, fallback=fallback)
 
-    def deve_fazer_backup_antes(self):
-        """Verifica se deve fazer backup antes de processar"""
-        return self.get_json('backup', 'antes_processar', default=True)
+    def getbool(self, section: str, key: str, fallback: bool = False) -> bool:
+        return self._ini.getboolean(section, key, fallback=fallback)
+
+    # ── Paths ─────────────────────────────────────────────────────────────────
+
+    def path(self, name: str) -> Path:
+        """Retorna o Path absoluto de uma pasta configurada em [paths]."""
+        rel = self._ini.get("paths", name, fallback=f"data/{name}")
+        return ROOT / rel
+
+    @property
+    def logs_dir(self) -> Path:
+        return ROOT / self._ini.get("paths", "logs", fallback="logs")
+
+    @property
+    def root(self) -> Path:
+        return ROOT
+
+    # ── System ────────────────────────────────────────────────────────────────
+
+    @property
+    def system_name(self) -> str:
+        return self.get("system", "name", "GNRE Processor")
+
+    @property
+    def version(self) -> str:
+        return self.get("system", "version", "1.0.0")
+
+    @property
+    def log_level(self) -> int:
+        level = self.get("system", "log_level", "INFO").upper()
+        return getattr(logging, level, logging.INFO)
+
+    # ── Processing ────────────────────────────────────────────────────────────
+
+    @property
+    def backup_after_process(self) -> bool:
+        return self.getbool("processing", "backup_after_process", True)
+
+    @property
+    def move_on_error(self) -> bool:
+        return self.getbool("processing", "move_on_error", True)
+
+    @property
+    def extensions(self) -> list[str]:
+        raw = self.get("processing", "extensions", ".pdf")
+        return [e.strip().lower() for e in raw.split(",")]
+
+    # ── CSV ───────────────────────────────────────────────────────────────────
+
+    @property
+    def csv_delimiter(self) -> str:
+        return self.get("csv", "delimiter", ";")
+
+    @property
+    def csv_encoding(self) -> str:
+        return self.get("csv", "encoding", "utf-8-sig")
+
+    @property
+    def csv_output_prefix(self) -> str:
+        return self.get("csv", "output_prefix", "importacao_senior")
+
+    # ── ERP ───────────────────────────────────────────────────────────────────
+
+    @property
+    def erp_transacao(self) -> str:
+        return self.get("erp", "transacao", "GNRE")
+
+    @property
+    def erp_situacao(self) -> str:
+        return self.get("erp", "situacao", "A")
+
+    @property
+    def erp_forma_pagamento(self) -> str:
+        return self.get("erp", "forma_pagamento", "")
+
+    @property
+    def erp_natureza(self) -> str:
+        return self.get("erp", "natureza", "")
+
+    # ── Process.json ─────────────────────────────────────────────────────────
+
+    @property
+    def sefaz_cod_for(self) -> dict[str, str]:
+        return {k: v for k, v in self._proc.get("sefaz_cod_for", {}).items()
+                if not k.startswith("_")}
+
+    @property
+    def tipo_erp(self) -> dict[str, str]:
+        return {k: v for k, v in self._proc.get("tipo_erp", {}).items()
+                if not k.startswith("_")}
+
+    @property
+    def campos_obrigatorios(self) -> list[str]:
+        return self._proc.get("campos_obrigatorios", [])
+
+    @property
+    def layout_csv(self) -> list[str]:
+        return self._proc.get("layout_csv", [])
