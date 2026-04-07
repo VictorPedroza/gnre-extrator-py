@@ -1,24 +1,45 @@
-
 """
 src/services/erp/mapper.py
 ===========================
 Etapa 3 — De-Para e montagem do layout ERP Senior.
 
-Responsabilidades:
-  - Converter UF Favorecida → Código Fornecedor SEFAZ
-  - Converter Código Receita → Tipo do Título no ERP
-  - Compor o Nº Título
-  - Montar o dicionário final com as colunas do CSV de importação
+Regras de negócio aplicadas:
+  1.  Nº Título             → <nDoc sem zeros à esquerda>_F01   ex: 000008407 → 8407_F01
+  2.  Tipo                  → De-Para Código Receita            100129=FCP / 100102=DIF
+  3.  Cod For               → De-Para UF Favorecida SEFAZ (process.json)
+  4.  Situação              → Fixo 902 (settings.ini → [erp] situacao)
+  5.  Data Emissão          → Data de Vencimento da guia (mesmo campo)
+  6.  Data de Entrada       → Movimento padrão (process.json → data_entrada_padrao)
+  7.  Vencimento Original   → Data de Vencimento da guia
+  8.  Vencimento Prorrogado → "Documento Válido para pagamento" da guia
+  9.  Valor Multa Negociada → Multa + Juros (soma dos dois campos da guia)
 """
 
 import logging
 from datetime import datetime
 
-from src.config.config import Config
-from src.services.gnre.extractor import GnreCampos
+from ...config.config import Config
+from ..gnre.extractor import GnreCampos
 
 logger = logging.getLogger(__name__)
 
+
+# ─── Helpers de conversão monetária ──────────────────────────────────────────
+
+def _valor_para_float(valor: str) -> float:
+    """Converte string monetária BR (ex: '1.234,56') para float."""
+    try:
+        return float(valor.replace(".", "").replace(",", "."))
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _float_para_valor(numero: float) -> str:
+    """Converte float para string monetária BR (ex: 1234.56 → '1.234,56')."""
+    return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+# ─── Mapper ──────────────────────────────────────────────────────────────────
 
 class ErpMapper:
     """Transforma GnreCampos no layout de importação do ERP Senior."""
@@ -28,29 +49,26 @@ class ErpMapper:
 
     # ── Interface pública ────────────────────────────────────────────────────
 
-    def mapear(
-        self,
-        campos: GnreCampos,
-        data_emissao: str | None = None,
-    ) -> dict[str, str]:
+    def mapear(self, campos: GnreCampos) -> dict[str, str]:
         """
         Recebe os campos extraídos da guia e retorna o dicionário
         com as colunas exatas do layout CSV do Senior.
-
-        Args:
-            campos:       Resultado do GnreExtractor.
-            data_emissao: Data de Emissão/Entrada no formato DD/MM/AAAA.
-                          Se None, usa a data de hoje.
         """
-        data_ref = data_emissao or datetime.today().strftime("%d/%m/%Y")
-
-        num_titulo  = self._num_titulo(campos)
-        tipo        = self._tipo_erp(campos.codigo_receita)
-        cod_for     = self._cod_for(campos.uf_favorecida)
+        num_titulo      = self._num_titulo(campos)                   # Regra 1
+        tipo            = self._tipo_erp(campos.codigo_receita)      # Regra 2
+        cod_for         = self._cod_for(campos.uf_favorecida)        # Regra 3
+        # Regra 4: situacao = 902 fixo via settings.ini
+        data_emissao    = campos.vencimento                          # Regra 5
+        data_entrada    = self._data_entrada()                       # Regra 6
+        venc_original   = campos.vencimento                          # Regra 7
+        venc_prorrogado = campos.doc_valido or campos.vencimento     # Regra 8
+        multa_negociada = self._multa_mais_juros(campos)             # Regra 9
 
         logger.debug(
-            f"{campos.arquivo}: "
-            f"Título={num_titulo}  Tipo={tipo}  CodFor={cod_for}"
+            f"{campos.arquivo}: Título={num_titulo}  Tipo={tipo}  "
+            f"CodFor={cod_for}  Emissão={data_emissao}  "
+            f"VencOrig={venc_original}  VencProrrog={venc_prorrogado}  "
+            f"MultaNeg={multa_negociada}"
         )
 
         return {
@@ -58,44 +76,86 @@ class ErpMapper:
             "Tipo":                  tipo,
             "Cod For":               cod_for,
             "Transação":             self.cfg.erp_transacao,
-            "Situação":              self.cfg.erp_situacao,
+            "Situação":              self.cfg.erp_situacao,          # 902
             "Natureza":              self.cfg.erp_natureza,
-            "Data Emissão":          data_ref,
-            "Data de Entrada":       data_ref,
-            "Vencimento Original":   campos.vencimento,
+            "Data Emissão":          data_emissao,
+            "Data de Entrada":       data_entrada,
+            "Vencimento Original":   venc_original,
             "Valor Original":        campos.total_recolher,
-            "Vencimento Prorrogado": campos.vencimento,
+            "Vencimento Prorrogado": venc_prorrogado,
             "Forma de Pagamento":    self.cfg.erp_forma_pagamento,
-            "Valor Multa Negociada": campos.multa,
+            "Valor Multa Negociada": multa_negociada,
             "Leitor":                campos.linha_digitavel,
         }
 
-    # ── De-Para ──────────────────────────────────────────────────────────────
+    # ── Regra 1 — Nº Título ──────────────────────────────────────────────────
 
     def _num_titulo(self, c: GnreCampos) -> str:
         """
-        Regra: <n_doc_origem>-GNRE-<uf_favorecida>
-        Fallback: usa Nº de Controle quando n_doc_origem está vazio.
+        Formato : <nDoc sem zeros à esquerda>_F01
+        Exemplo : '000008407' → '8407_F01'
+        Fallback: usa Nº de Controle quando n_doc_origem estiver vazio.
         """
         base = c.n_doc_origem or c.num_controle
-        return f"{base}-GNRE-{c.uf_favorecida}" if base and c.uf_favorecida else base
+        if not base:
+            return ""
+        numero = str(int(base)) if base.isdigit() else base
+        return f"{numero}_F01"
+
+    # ── Regra 2 — Tipo ERP ───────────────────────────────────────────────────
 
     def _tipo_erp(self, codigo_receita: str) -> str:
-        """De-Para Código Receita → Tipo ERP (process.json)."""
+        """
+        De-Para Código Receita → Tipo ERP (process.json → tipo_erp).
+        Mapeamentos vigentes:
+          100129 → FCP
+          100102 → DIF
+        Fallback: GNRE-<cod> com aviso no log.
+        """
         tipo = self.cfg.tipo_erp.get(codigo_receita)
         if not tipo:
             tipo = f"GNRE-{codigo_receita}"
             logger.warning(
-                f"Código de Receita '{codigo_receita}' não mapeado em process.json. "
-                f"Usando '{tipo}' — adicione o De-Para se necessário."
+                f"Código de Receita '{codigo_receita}' não mapeado em process.json "
+                f"(tipo_erp). Usando '{tipo}' como fallback."
             )
         return tipo
 
+    # ── Regra 3 — Cod For ────────────────────────────────────────────────────
+
     def _cod_for(self, uf: str) -> str:
-        """De-Para UF Favorecida → Código Fornecedor SEFAZ (process.json)."""
+        """De-Para UF Favorecida → Código Fornecedor SEFAZ (process.json → sefaz_cod_for)."""
         cod = self.cfg.sefaz_cod_for.get(uf, "")
         if not cod:
-            logger.warning(
-                f"UF '{uf}' não encontrada no De-Para sefaz_cod_for (process.json)."
-            )
+            logger.warning(f"UF '{uf}' não encontrada em sefaz_cod_for (process.json).")
         return cod
+
+    # ── Regra 6 — Data de Entrada ────────────────────────────────────────────
+
+    def _data_entrada(self) -> str:
+        """
+        Retorna a Data de Entrada conforme process.json → data_entrada_padrao.
+          'hoje'       → data de execução do serviço  (DD/MM/AAAA)
+          'DD/MM/AAAA' → data fixa informada no JSON
+        """
+        valor = self.cfg.data_entrada_padrao.strip().lower()
+        if valor == "hoje":
+            return datetime.today().strftime("%d/%m/%Y")
+        try:
+            datetime.strptime(valor, "%d/%m/%Y")
+            return valor
+        except ValueError:
+            logger.warning(
+                f"data_entrada_padrao inválido ('{valor}') — usando data de hoje."
+            )
+            return datetime.today().strftime("%d/%m/%Y")
+
+    # ── Regra 9 — Valor Multa Negociada ──────────────────────────────────────
+
+    def _multa_mais_juros(self, c: GnreCampos) -> str:
+        """
+        Valor Multa Negociada = Multa + Juros extraídos da guia.
+        Soma os dois e retorna no formato monetário BR (ex: '1.234,56').
+        """
+        total = _valor_para_float(c.multa) + _valor_para_float(c.juros)
+        return _float_para_valor(total)
