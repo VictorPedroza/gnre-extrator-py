@@ -1,24 +1,68 @@
 {
-    "sefaz_cod_for": {
-        "AC": "1001", "AL": "1002", "AP": "1003", "AM": "1004", "BA": "1005",
-        "CE": "1006", "DF": "1007", "ES": "1008", "GO": "1009", "MA": "1010",
-        "MT": "1011", "MS": "1012", "MG": "1013", "PA": "1014", "PB": "1015",
-        "PR": "1016", "PE": "1017", "PI": "1018", "RJ": "1019", "RN": "1020",
-        "RS": "1021", "RO": "1022", "RR": "1023", "SC": "1024", "SP": "1025",
-        "SE": "1026", "TO": "1027"
-    },
-    "tipo_erp": {
-        "100-6": "GNRE-ICMS",
-        "101-3": "GNRE-FECP",
-        "102-1": "GNRE-MULTA",
-        "103-0": "GNRE-JUROS"
-    },
-    "campos_obrigatorios": [
-        "uf_favorecida", "codigo_receita", "cnpj", "vencimento", "total_recolher"
-    ],
-    "layout_csv": [
-        "Nº Título", "Tipo", "Cod For", "Transação", "Situação", "Natureza",
-        "Data Emissão", "Data de Entrada", "Vencimento Original", "Valor Original",
-        "Vencimento Prorrogado", "Forma de Pagamento", "Valor Multa Negociada", "Leitor"
-    ]
+  "_comentario": "Regras de processamento GNRE → ERP Senior. Edite conforme necessidade.",
+
+  "sefaz_cod_for": {
+    "_comentario": "De-Para: UF Favorecida → Código do Fornecedor SEFAZ no ERP",
+    "AL": "39357",
+    "AM": "39359",
+    "AP": "39358",
+    "BA": "39351",
+    "CE": "39360",
+    "DF": "39361",
+    "ES": "39362",
+    "GO": "39346",
+    "MA": "39348",
+    "MG": "35073",
+    "MS": "39363",
+    "MT": "30610",
+    "PA": "39364",
+    "PB": "39365",
+    "PE": "39345",
+    "PI": "39367",
+    "PR": "39347",
+    "RJ": "39368",
+    "RN": "39369",
+    "RO": "38055",
+    "RR": "39370",
+    "RS": "39352",
+    "SC": "39353",
+    "SE": "39354",
+    "TO": "39355"
+  },
+
+  "tipo_erp": {
+    "_comentario": "De-Para: Código da Receita GNRE → Tipo do Título no ERP Senior",
+    "100129": "FCP",
+    "100102": "DIF"
+  },
+
+  "data_entrada_padrao": {
+    "_comentario": "Movimento padrão para o campo 'Data de Entrada'. Formatos: DD/MM/AAAA fixo ou 'hoje' para data de execução.",
+    "valor": "hoje"
+  },
+
+  "campos_obrigatorios": [
+    "uf_favorecida",
+    "codigo_receita",
+    "cnpj",
+    "vencimento",
+    "total_recolher"
+  ],
+
+  "layout_csv": [
+    "Nº Título",
+    "Tipo",
+    "Cod For",
+    "Transação",
+    "Situação",
+    "Natureza",
+    "Data Emissão",
+    "Data de Entrada",
+    "Vencimento Original",
+    "Valor Original",
+    "Vencimento Prorrogado",
+    "Forma de Pagamento",
+    "Valor Multa Negociada",
+    "Leitor"
+  ]
 }
