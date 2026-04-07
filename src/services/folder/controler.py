@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-from src.config.config import Config
+from ...config.config import Config
 
 logger = logging.getLogger(__name__)
 
