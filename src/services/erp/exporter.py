@@ -13,7 +13,7 @@ import csv
 import logging
 from pathlib import Path
 
-from src.config.config import Config
+from ...config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ class ErpExporter:
                 extrasaction="ignore",
                 delimiter=self.cfg.csv_delimiter,
             )
-            writer.writeheader()
             writer.writerows(linhas)
 
         logger.info(
