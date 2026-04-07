@@ -4,48 +4,40 @@ src/config/config.py
 Gerenciador central de configurações do serviço GNRE.
 
 Responsabilidades:
-  - Localizar a raiz do projeto independente de onde o script é chamado
+  - Localizar a raiz do projeto em desenvolvimento E no executável PyInstaller
   - Ler settings.ini e process.json
   - Criar pastas obrigatórias automaticamente
   - Expor configurações tipadas para os demais módulos
 """
 
+import sys
 import json
 import logging
 import configparser
-import sys
-import os
 from pathlib import Path
 
 
-def get_project_root() -> Path:
-    """
-    Detecta a raiz do projeto de forma robusta:
-    - Quando executado como script Python normal
-    - Quando executado como executável PyInstaller
-    """
-    if getattr(sys, 'frozen', False):
-        # Estamos rodando como executável (PyInstaller)
-        # sys.executable é o caminho do .exe
-        executable_path = Path(sys.executable)
-        # A raiz é a pasta onde está o executável
-        return executable_path.parent
-    else:
-        # Estamos rodando como script Python
-        # __file__ está em src/config/config.py
-        # Subimos 2 níveis para chegar na raiz do projeto
-        return Path(__file__).resolve().parents[2]
+# ─── Localização da raiz do projeto ──────────────────────────────────────────
+# Quando empacotado pelo PyInstaller (--onefile), os arquivos internos ficam
+# em sys._MEIPASS, mas config/ e data/ devem estar ao lado do executável.
+# Em desenvolvimento, a raiz é dois níveis acima de src/config/config.py.
+
+def _resolve_root() -> Path:
+    if getattr(sys, "frozen", False):
+        # Executável PyInstaller: raiz = pasta onde o .exe está
+        return Path(sys.executable).resolve().parent
+    # Desenvolvimento: dois níveis acima de src/config/config.py
+    return Path(__file__).resolve().parents[2]
 
 
-# Raiz do projeto (pasta onde estão config/, src/, dist/)
-ROOT = get_project_root()
+ROOT = _resolve_root()
 
 
 class Config:
     """Carrega e valida todas as configurações do serviço."""
 
     def __init__(self) -> None:
-        self._ini = self._load_ini()
+        self._ini  = self._load_ini()
         self._proc = self._load_process()
         self._ensure_dirs()
 
@@ -54,125 +46,22 @@ class Config:
     def _load_ini(self) -> configparser.ConfigParser:
         path = ROOT / "config" / "settings.ini"
         if not path.exists():
-            # Tenta criar um arquivo default se não existir
-            self._create_default_ini(path)
-        
+            raise FileNotFoundError(
+                f"Arquivo de configuração não encontrado: {path}\n"
+                "Certifique-se de que a pasta config/ existe ao lado do executável."
+            )
         ini = configparser.ConfigParser()
         ini.read(path, encoding="utf-8")
         return ini
 
-    def _create_default_ini(self, path: Path) -> None:
-        """Cria um arquivo settings.ini padrão se ele não existir."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        default_content = """[system]
-name = GNRE Processor
-version = 1.0.0
-log_level = INFO
-
-[paths]
-entrada = entrada
-saida = saida
-backup = backup
-temp = temp
-logs = logs
-
-[processing]
-backup_after_process = True
-move_on_error = True
-extensions = .pdf
-
-[csv]
-delimiter = ;
-encoding = utf-8-sig
-output_prefix = importacao_senior
-
-[erp]
-transacao = GNRE
-situacao = A
-forma_pagamento = 
-natureza = 
-"""
-        path.write_text(default_content, encoding="utf-8")
-        print(f"📝  Arquivo de configuração padrão criado em: {path}")
-
     def _load_process(self) -> dict:
         path = ROOT / "config" / "process.json"
         if not path.exists():
-            self._create_default_process(path)
-        
+            raise FileNotFoundError(
+                f"Arquivo de regras não encontrado: {path}"
+            )
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-
-    def _create_default_process(self, path: Path) -> None:
-        """Cria um arquivo process.json padrão se ele não existir."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        default_content = {
-            "sefaz_cod_for": {
-                "AC": "1001",
-                "AL": "1002",
-                "AP": "1003",
-                "AM": "1004",
-                "BA": "1005",
-                "CE": "1006",
-                "DF": "1007",
-                "ES": "1008",
-                "GO": "1009",
-                "MA": "1010",
-                "MT": "1011",
-                "MS": "1012",
-                "MG": "1013",
-                "PA": "1014",
-                "PB": "1015",
-                "PR": "1016",
-                "PE": "1017",
-                "PI": "1018",
-                "RJ": "1019",
-                "RN": "1020",
-                "RS": "1021",
-                "RO": "1022",
-                "RR": "1023",
-                "SC": "1024",
-                "SP": "1025",
-                "SE": "1026",
-                "TO": "1027"
-            },
-            "tipo_erp": {
-                "100-6": "GNRE-ICMS",
-                "101-3": "GNRE-FECP",
-                "102-1": "GNRE-MULTA",
-                "103-0": "GNRE-JUROS"
-            },
-            "campos_obrigatorios": [
-                "uf_favorecida",
-                "codigo_receita",
-                "cnpj",
-                "vencimento",
-                "total_recolher"
-            ],
-            "layout_csv": [
-                "Nº Título",
-                "Tipo",
-                "Cod For",
-                "Transação",
-                "Situação",
-                "Natureza",
-                "Data Emissão",
-                "Data de Entrada",
-                "Vencimento Original",
-                "Valor Original",
-                "Vencimento Prorrogado",
-                "Forma de Pagamento",
-                "Valor Multa Negociada",
-                "Leitor"
-            ]
-        }
-        
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(default_content, f, indent=2, ensure_ascii=False)
-        
-        print(f"📝  Arquivo de regras padrão criado em: {path}")
 
     def _ensure_dirs(self) -> None:
         """Cria automaticamente as pastas de dados e logs se não existirem."""
@@ -255,7 +144,7 @@ natureza =
 
     @property
     def erp_situacao(self) -> str:
-        return self.get("erp", "situacao", "A")
+        return self.get("erp", "situacao", "902")
 
     @property
     def erp_forma_pagamento(self) -> str:
@@ -284,3 +173,11 @@ natureza =
     @property
     def layout_csv(self) -> list[str]:
         return self._proc.get("layout_csv", [])
+
+    @property
+    def data_entrada_padrao(self) -> str:
+        """
+        Valor do campo 'Data de Entrada' (movimento padrão).
+        Retorna 'hoje' ou uma data fixa DD/MM/AAAA conforme process.json.
+        """
+        return self._proc.get("data_entrada_padrao", {}).get("valor", "hoje")
