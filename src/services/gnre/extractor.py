@@ -6,7 +6,8 @@ Etapas 1 e 2 — Extração e validação dos campos da guia GNRE.
 Responsabilidades:
   - Abrir o PDF e extrair o texto da 1ª via (descarta 2ª e 3ª via)
   - Mapear cada campo do layout GNRE pelo número da linha
-  - Aplicar fallback: buscar Nº Documento na chave de acesso NF-e
+  - Aplicar fallback: buscar Nº Documento nas informações complementares
+    via chave de acesso NF-e (prefixos: "Chave:", "CHAVE DFE", "CHAVE NF-E" etc.)
   - Retornar um GnreCampos (dataclass) e uma lista de erros de validação
 """
 
@@ -69,6 +70,20 @@ class GnreCampos:
         return len(self.erros) == 0
 
 
+# ─── Regex para chave de acesso NF-e nas Informações Complementares ──────────
+#
+# O campo "Informações Complementares" pode conter a chave em formatos variados:
+#   - "Chave: 35260326760956000185550030000084071834406611. PIX: ..."   (BA - com n_doc)
+#   - "CHAVE DFE 35260326760956000185550030000083511832983371"           (MS - sem n_doc)
+#   - "CHAVE NF-E 35260326..."                                           (outros)
+#
+# A regex captura 44 dígitos precedidos por qualquer um desses prefixos.
+_RE_CHAVE_NF = re.compile(
+    r"(?:Chave\s*[:\-]?\s*|CHAVE\s+(?:DFE|NF-?E)\s+)(\d{44})",
+    re.IGNORECASE,
+)
+
+
 # ─── Extractor ────────────────────────────────────────────────────────────────
 
 class GnreExtractor:
@@ -84,18 +99,18 @@ class GnreExtractor:
       L05  <Razão Social>  <CNPJ>  Data de Vencimento
       L06  Endereço: <end>  <Vencimento>
       L07  Município: <mun>  UF: <UF>  Nº Documento de Origem
-      L08  CEP: <cep>  Telefone: <tel>  <NºDocOrigem>
+      L08  CEP: <cep>  Telefone: [<NºDocOrigem>]   ← ausente quando vazio
       L09  Dados do Destinatário  Período de Referência  Parcela
-      L10  CPF/CNPJ/Insc. Est.:  <periodo>
+      L10  CPF/CNPJ/Insc. Est.:  [<periodo>]
       L11  Município:  Valor Principal
       L12  Reservado à Fiscalização  R$ <ValorPrincipal>
-      L13  A   (letra inicial de "Autenticação" — ignore)
+      L13  A
       L14  Convênio/Protocolo:  Atualização Monetária  u
       L15  Produto:  R$ <AtualizMonet>  t
       L16  e
       L17  Juros  n
       L18  Informações Complementares:  R$ <Juros>  t i
-      L19  Chave: <chave44>.  PIX: <pix>  Multa  c
+      L19  [<chave_ou_conteudo>]  Multa  c          ← chave NF-e aqui quando presente
       L20  R$ <Multa>  a
       L21  ç
       L22  Total a Recolher  ã
@@ -161,7 +176,7 @@ class GnreExtractor:
         l05 = L(5)
         m_cnpj = re.search(r"([\d]{2}\.[\d]{3}\.[\d]{3}/[\d]{4}-[\d]{2})", l05)
         if m_cnpj:
-            c.cnpj      = m_cnpj.group(1)
+            c.cnpj         = m_cnpj.group(1)
             c.razao_social = l05[: l05.index(c.cnpj)].strip()
 
         # L06 — Vencimento (último token, formato DD/MM/AAAA)
@@ -175,18 +190,36 @@ class GnreExtractor:
         if m_uf:
             c.uf_emitente = m_uf.group(1)
 
-        # L08 — Nº Documento de Origem (último token numérico)
-        l08_tokens = L(8).split()
-        if l08_tokens and l08_tokens[-1].isdigit():
-            c.n_doc_origem = l08_tokens[-1]
+        # L08 — Nº Documento de Origem: último token numérico após "Telefone:"
+        # Quando presente, o número aparece colado ao final da linha (ex: "CEP: 07220-010 Telefone: 8452")
+        # Quando ausente, a linha termina em "Telefone:" sem valor.
+        l08 = L(8)
+        m_ndoc = re.search(r"Telefone:\s*(\d+)\s*$", l08)
+        if m_ndoc:
+            c.n_doc_origem = m_ndoc.group(1)
 
-        # L10 — Período de Referência (último token)
-        l10_tokens = L(10).split()
-        c.periodo_referencia = l10_tokens[-1] if l10_tokens else ""
+        # L10 — Período de Referência: busca padrão MM/AAAA no final da linha
+        # (quando ausente o período, o token final pode ser apenas parte do texto)
+        l10 = L(10)
+        m_per = re.search(r"(\d{2}/\d{4})\s*$", l10)
+        if m_per:
+            c.periodo_referencia = m_per.group(1)
+        else:
+            # Fallback: último token
+            l10_tokens = l10.split()
+            c.periodo_referencia = l10_tokens[-1] if l10_tokens else ""
+
+        # Chave NF-e — busca no texto completo das "Informações Complementares"
+        # A chave pode aparecer em L19 (com chave) ou não existir (sem chave).
+        # Varremos todo o bloco de texto para robustez máxima.
+        texto_completo = "\n".join(linhas)
+        m_chave = _RE_CHAVE_NF.search(texto_completo)
+        if m_chave:
+            c.chave_nf = m_chave.group(1)
+            logger.debug(f"{c.arquivo}: Chave NF-e encontrada → {c.chave_nf}")
 
         # Valores R$ — captura todos em ordem de aparição no texto
-        texto = "\n".join(linhas)
-        valores = re.findall(r"R\$\s*([\d]{1,3}(?:\.[\d]{3})*,[\d]{2})", texto)
+        valores = re.findall(r"R\$\s*([\d]{1,3}(?:\.[\d]{3})*,[\d]{2})", texto_completo)
 
         def _v(i: int) -> str:
             return valores[i] if i < len(valores) else "0,00"
@@ -205,30 +238,60 @@ class GnreExtractor:
         # L24 — Linha digitável / código de barras
         c.linha_digitavel = L(24).strip()
 
-        # L19 — Chave de acesso NF-e (44 dígitos)
-        m_chave = re.search(r"Chave:\s*(\d{44})", L(19))
-        if m_chave:
-            c.chave_nf = m_chave.group(1)
-
     # ── Fallback: Nº Documento via chave NF-e ────────────────────────────────
+
+    # Alguns estados (ex: PB) preenchem o campo "Nº Documento de Origem" com o
+    # número de protocolo SEFAZ (tipicamente 16 dígitos) em vez do nNF da nota.
+    # O nNF na chave NF-e ocupa 9 posições (máximo 999.999.999), portanto
+    # qualquer n_doc_origem com mais de 9 dígitos é tratado como protocolo e
+    # substituído pelo nNF extraído da chave.
+    _MAX_NNF_DIGITS = 9
 
     @staticmethod
     def _fallback_n_doc(c: GnreCampos) -> None:
         """
-        Quando o campo 'Nº Documento de Origem' está vazio na guia,
-        extrai o nNF da chave de acesso NF-e (posições 26-34, base 1).
+        Garante que n_doc_origem contenha o nNF real da NF-e, extraindo-o da
+        chave de acesso NF-e nas informações complementares quando necessário.
+
+        Aciona o fallback em dois casos:
+          1. n_doc_origem está vazio — nenhum valor foi encontrado no campo.
+          2. n_doc_origem tem mais de 9 dígitos — o estado preencheu o campo
+             com um número de protocolo SEFAZ (ex: PB usa 16 dígitos), que
+             não corresponde ao nNF da nota e não serve como Nº Título no ERP.
+
+        Estrutura da chave NF-e (44 dígitos):
+          UF(2) AAMM(4) CNPJ(14) Modelo(2) Serie(3) nNF(9) tpEmit(1) cNF(8) cDV(1)
+          → nNF = chave[25:34]
         """
-        if not c.n_doc_origem and c.chave_nf:
-            try:
-                c.n_doc_origem = str(int(c.chave_nf[25:34]))
-                c.avisos.append(
-                    f"Nº Documento extraído da chave NF-e: {c.n_doc_origem}"
-                )
-                logger.debug(
-                    f"{c.arquivo}: nDoc via chave NF-e → {c.n_doc_origem}"
-                )
-            except (ValueError, IndexError):
-                pass
+        precisa_fallback = (
+            not c.n_doc_origem                                  # caso 1: vazio
+            or (c.n_doc_origem.isdigit()                        # caso 2: protocolo longo
+                and len(c.n_doc_origem) > GnreExtractor._MAX_NNF_DIGITS)
+        )
+
+        if not precisa_fallback or not c.chave_nf:
+            return
+
+        try:
+            n_doc = str(int(c.chave_nf[25:34]))   # remove zeros à esquerda
+            motivo = (
+                "ausente no campo"
+                if not c.n_doc_origem
+                else f"protocolo SEFAZ ({c.n_doc_origem}) substituído"
+            )
+            c.n_doc_origem = n_doc
+            c.avisos.append(
+                f"Nº Documento extraído da chave NF-e "
+                f"(informações complementares) — {motivo}: {c.n_doc_origem}"
+            )
+            logger.debug(
+                f"{c.arquivo}: nDoc via chave NF-e [{motivo}] → {c.n_doc_origem}"
+            )
+        except (ValueError, IndexError):
+            logger.warning(
+                f"{c.arquivo}: Chave NF-e encontrada mas nNF inválido "
+                f"(chave={c.chave_nf!r})"
+            )
 
     # ── Validação de campos obrigatórios ─────────────────────────────────────
 
