@@ -36,6 +36,12 @@
     "100102": "DIF"
   },
 
+  "codemp_razao_social": {
+    "_comentario": "De-Para: trecho da Razão Social (case-insensitive) → CODEMP no ERP. A busca percorre as chaves em ordem e usa a primeira que aparecer na razão social do PDF.",
+    "ULTRA":    "2",
+    "NAUTIKA":  "2"
+  },
+
   "data_entrada_padrao": {
     "_comentario": "Movimento padrão para o campo 'Data de Entrada'. Formatos: DD/MM/AAAA fixo ou 'hoje' para data de execução.",
     "valor": "hoje"
@@ -49,7 +55,9 @@
     "total_recolher"
   ],
 
-  "layout_csv": [
+  "layout_csv": [    
+    "CODEMP",
+    "CODFIL",
     "Nº Título",
     "Tipo",
     "Cod For",

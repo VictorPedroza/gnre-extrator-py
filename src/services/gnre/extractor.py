@@ -61,6 +61,9 @@ class GnreCampos:
     # Chave NF-e
     chave_nf:           str  = ""
 
+    # Nº Documento extraído de "Documento: XXXX" nas informações complementares (ex: PB)
+    n_doc_complementar: str  = ""
+
     # Meta
     erros:              list = field(default_factory=list)
     avisos:             list = field(default_factory=list)
@@ -80,6 +83,27 @@ class GnreCampos:
 # A regex captura 44 dígitos precedidos por qualquer um desses prefixos.
 _RE_CHAVE_NF = re.compile(
     r"(?:Chave\s*[:\-]?\s*|CHAVE\s+(?:DFE|NF-?E)\s+)(\d{44})",
+    re.IGNORECASE,
+)
+
+# ─── Regex para "Documento: XXXX" nas Informações Complementares (ex: PB) ────
+#
+# A PB inclui nas informações complementares uma tag "Documento:" que pode ter
+# dois formatos:
+#
+#   Formato A — chave NF-e de 44 dígitos contíguos (sem espaço interno):
+#     "Documento: 35260326760956000185550600000021561797078878 Multa c"
+#     O nNF está nas posições 25-34 da chave (int → sem zeros à esquerda).
+#
+#   Formato B — número curto (nNF direto, ≤ 9 dígitos):
+#     "Documento: 20315745"
+#     O valor já é o nNF e é usado diretamente.
+#
+# A regex tenta primeiro capturar exatamente 44 dígitos (grupo 1),
+# e como fallback captura qualquer sequência numérica mais curta (grupo 2).
+_RE_DOC_COMPLEMENTAR = re.compile(
+    r"Documento\s*:\s*(\d{44})(?!\d)"   # Formato A: exatamente 44 dígitos
+    r"|Documento\s*:\s*(\d{1,9})(?!\d)",  # Formato B: número curto ≤ 9 dígitos
     re.IGNORECASE,
 )
 
@@ -218,6 +242,17 @@ class GnreExtractor:
             c.chave_nf = m_chave.group(1)
             logger.debug(f"{c.arquivo}: Chave NF-e encontrada → {c.chave_nf}")
 
+        # "Documento: XXXX" nas informações complementares (ex: PB)
+        # Capturado apenas dentro do bloco após "Informações Complementares:"
+        m_inf = re.search(r"Informa[çc][oõ]es Complementares:(.+?)(?:Documento V[áa]lido|$)",
+                          texto_completo, re.DOTALL | re.IGNORECASE)
+        if m_inf:
+            m_doc_comp = _RE_DOC_COMPLEMENTAR.search(m_inf.group(1))
+            if m_doc_comp:
+                # grupo 1 = chave 44 dígitos; grupo 2 = número curto
+                c.n_doc_complementar = m_doc_comp.group(1) or m_doc_comp.group(2)
+                logger.debug(f"{c.arquivo}: Documento complementar encontrado → {c.n_doc_complementar}")
+
         # Valores R$ — captura todos em ordem de aparição no texto
         valores = re.findall(r"R\$\s*([\d]{1,3}(?:\.[\d]{3})*,[\d]{2})", texto_completo)
 
@@ -238,60 +273,99 @@ class GnreExtractor:
         # L24 — Linha digitável / código de barras
         c.linha_digitavel = L(24).strip()
 
-    # ── Fallback: Nº Documento via chave NF-e ────────────────────────────────
+    # ── Fallback: Nº Documento via informações complementares ou chave NF-e ───
 
     # Alguns estados (ex: PB) preenchem o campo "Nº Documento de Origem" com o
     # número de protocolo SEFAZ (tipicamente 16 dígitos) em vez do nNF da nota.
     # O nNF na chave NF-e ocupa 9 posições (máximo 999.999.999), portanto
     # qualquer n_doc_origem com mais de 9 dígitos é tratado como protocolo e
-    # substituído pelo nNF extraído da chave.
+    # substituído. A ordem de prioridade do fallback é:
+    #   1. "Documento: XXXX" nas informações complementares  (mais explícito)
+    #   2. nNF extraído da chave NF-e  (posições 25-34)
     _MAX_NNF_DIGITS = 9
 
     @staticmethod
     def _fallback_n_doc(c: GnreCampos) -> None:
         """
-        Garante que n_doc_origem contenha o nNF real da NF-e, extraindo-o da
-        chave de acesso NF-e nas informações complementares quando necessário.
+        Garante que n_doc_origem contenha o nNF real da NF-e.
 
         Aciona o fallback em dois casos:
-          1. n_doc_origem está vazio — nenhum valor foi encontrado no campo.
-          2. n_doc_origem tem mais de 9 dígitos — o estado preencheu o campo
-             com um número de protocolo SEFAZ (ex: PB usa 16 dígitos), que
-             não corresponde ao nNF da nota e não serve como Nº Título no ERP.
+          1. n_doc_origem está vazio.
+          2. n_doc_origem tem mais de 9 dígitos — protocolo SEFAZ (ex: PB).
+
+        Ordem de preferência para preencher:
+          a. n_doc_complementar — "Documento: XXXX" nas informações complementares.
+          b. nNF da chave NF-e  — posições 25-34 da chave de 44 dígitos.
 
         Estrutura da chave NF-e (44 dígitos):
           UF(2) AAMM(4) CNPJ(14) Modelo(2) Serie(3) nNF(9) tpEmit(1) cNF(8) cDV(1)
           → nNF = chave[25:34]
         """
         precisa_fallback = (
-            not c.n_doc_origem                                  # caso 1: vazio
-            or (c.n_doc_origem.isdigit()                        # caso 2: protocolo longo
+            not c.n_doc_origem
+            or (c.n_doc_origem.isdigit()
                 and len(c.n_doc_origem) > GnreExtractor._MAX_NNF_DIGITS)
         )
 
-        if not precisa_fallback or not c.chave_nf:
+        if not precisa_fallback:
             return
 
-        try:
-            n_doc = str(int(c.chave_nf[25:34]))   # remove zeros à esquerda
-            motivo = (
-                "ausente no campo"
-                if not c.n_doc_origem
-                else f"protocolo SEFAZ ({c.n_doc_origem}) substituído"
-            )
-            c.n_doc_origem = n_doc
-            c.avisos.append(
-                f"Nº Documento extraído da chave NF-e "
-                f"(informações complementares) — {motivo}: {c.n_doc_origem}"
-            )
-            logger.debug(
-                f"{c.arquivo}: nDoc via chave NF-e [{motivo}] → {c.n_doc_origem}"
-            )
-        except (ValueError, IndexError):
-            logger.warning(
-                f"{c.arquivo}: Chave NF-e encontrada mas nNF inválido "
-                f"(chave={c.chave_nf!r})"
-            )
+        motivo_original = (
+            "ausente no campo"
+            if not c.n_doc_origem
+            else f"protocolo SEFAZ ({c.n_doc_origem}) substituído"
+        )
+
+        # Prioridade 1: "Documento: XXXX" das informações complementares
+        if c.n_doc_complementar:
+            valor = c.n_doc_complementar
+
+            if len(valor) == 44 and valor.isdigit():
+                # Formato A: valor é a chave NF-e completa → extrai nNF das pos 25-34
+                try:
+                    n_doc = str(int(valor[25:34]))
+                    c.n_doc_origem = n_doc
+                    c.avisos.append(
+                        f"Nº Documento extraído da chave em 'Documento:' nas informações "
+                        f"complementares (pos 25-34) — {motivo_original}: {c.n_doc_origem}"
+                    )
+                    logger.debug(
+                        f"{c.arquivo}: nDoc via Documento:/chave [{motivo_original}] → {c.n_doc_origem}"
+                    )
+                except (ValueError, IndexError):
+                    logger.warning(
+                        f"{c.arquivo}: 'Documento:' contém chave mas nNF inválido "
+                        f"(valor={valor!r})"
+                    )
+            else:
+                # Formato B: valor é o nNF direto (número curto ≤ 9 dígitos)
+                c.n_doc_origem = str(int(valor)) if valor.isdigit() else valor
+                c.avisos.append(
+                    f"Nº Documento extraído de 'Documento:' nas informações "
+                    f"complementares — {motivo_original}: {c.n_doc_origem}"
+                )
+                logger.debug(
+                    f"{c.arquivo}: nDoc via Documento:/direto [{motivo_original}] → {c.n_doc_origem}"
+                )
+            return
+
+        # Prioridade 2: nNF da chave NF-e
+        if c.chave_nf:
+            try:
+                n_doc = str(int(c.chave_nf[25:34]))
+                c.n_doc_origem = n_doc
+                c.avisos.append(
+                    f"Nº Documento extraído da chave NF-e "
+                    f"— {motivo_original}: {c.n_doc_origem}"
+                )
+                logger.debug(
+                    f"{c.arquivo}: nDoc via chave NF-e [{motivo_original}] → {c.n_doc_origem}"
+                )
+            except (ValueError, IndexError):
+                logger.warning(
+                    f"{c.arquivo}: Chave NF-e encontrada mas nNF inválido "
+                    f"(chave={c.chave_nf!r})"
+                )
 
     # ── Validação de campos obrigatórios ─────────────────────────────────────
 

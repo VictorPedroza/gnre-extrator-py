@@ -144,7 +144,7 @@ class Config:
 
     @property
     def erp_situacao(self) -> str:
-        return self.get("erp", "situacao", "902")
+        return self.get("erp", "situacao", "AB")
 
     @property
     def erp_forma_pagamento(self) -> str:
@@ -153,6 +153,11 @@ class Config:
     @property
     def erp_natureza(self) -> str:
         return self.get("erp", "natureza", "")
+
+    @property
+    def erp_codfil(self) -> str:
+        """Filial fixa para todos os registros (settings.ini → [erp] codfil)."""
+        return self.get("erp", "codfil", "1")
 
     # ── Process.json ─────────────────────────────────────────────────────────
 
@@ -164,6 +169,16 @@ class Config:
     @property
     def tipo_erp(self) -> dict[str, str]:
         return {k: v for k, v in self._proc.get("tipo_erp", {}).items()
+                if not k.startswith("_")}
+
+    @property
+    def codemp_razao_social(self) -> dict[str, str]:
+        """
+        De-Para: trecho da Razão Social → CODEMP.
+        Chaves são trechos (case-insensitive) que serão buscados na razão social
+        do PDF. Ex: {"ULTRA": "2", "NAUTIKA": "2"}
+        """
+        return {k: v for k, v in self._proc.get("codemp_razao_social", {}).items()
                 if not k.startswith("_")}
 
     @property
